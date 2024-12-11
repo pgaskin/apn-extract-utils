@@ -38,6 +38,7 @@ func main() {
 		onlyCarrierIDMatch            = false
 		expandAdditionalFromCarrierID = true
 		debugDumpText                 = true
+		filterNameSuffix              = "_ca"
 	)
 
 	txt := prototext.MarshalOptions{
@@ -84,6 +85,9 @@ func main() {
 
 	allSettings := map[string]*carrier_settings.CarrierSettings{} // [canonicalName]
 	for _, cs := range genericSettings.Setting {
+		if filterNameSuffix != "" && !strings.HasSuffix(cs.GetCanonicalName(), filterNameSuffix) {
+			continue
+		}
 		slog.Debug("loaded generic settings", "canonical_name", cs.GetCanonicalName())
 		allSettings[*cs.CanonicalName] = cs
 	}
@@ -97,6 +101,9 @@ func main() {
 		carrierSettings, err := openProto[*carrier_settings.CarrierSettings](pixelCarrierSettings, name)
 		if err != nil {
 			return err
+		}
+		if filterNameSuffix != "" && !strings.HasSuffix(carrierSettings.GetCanonicalName(), filterNameSuffix) {
+			return nil
 		}
 		if debugDumpText {
 			buf, _ := txt.Marshal(genericSettings)

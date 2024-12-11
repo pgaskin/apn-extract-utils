@@ -121,17 +121,20 @@ func main() {
 	}
 	slog.Info("loaded specific settings", "total", specificSettings)
 
-	carrierMap := map[string]*carrier_list.CarrierMap{} // [canonicalName]
+	carrierMap := map[string][]*carrier_list.CarrierMap{} // [canonicalName]
+	for _, c := range carrierList.Entry {
+		canonicalName := c.GetCanonicalName()
+		if filterNameSuffix != "" && !strings.HasSuffix(canonicalName, filterNameSuffix) {
+			continue
+		}
+		carrierMap[canonicalName] = append(carrierMap[canonicalName], c)
+	}
 	for _, canonicalName := range slices.Sorted(maps.Keys(allSettings)) {
-		i := slices.IndexFunc(carrierList.Entry, func(c *carrier_list.CarrierMap) bool {
-			return c.GetCanonicalName() == canonicalName
-		})
-		if i == -1 {
+		if len(carrierMap[canonicalName]) == 0 {
 			slog.Error("failed to find carrier_list entry for carrier, dropping", "canonical_name", canonicalName)
 			delete(allSettings, canonicalName)
 			continue
 		}
-		carrierMap[canonicalName] = carrierList.Entry[i]
 	}
 	slog.Info("mapped carrier_settings to carrier_list entries")
 
@@ -139,80 +142,88 @@ func main() {
 	carrierIdMatchedExact := map[int]string{}
 	for _, canonicalName := range slices.Sorted(maps.Keys(allSettings)) {
 		carrier := carrierMap[canonicalName]
-		for _, wantMatch := range carrier.CarrierId {
-			i := slices.IndexFunc(carrierId.CarrierId, func(c *carrierid.CarrierId) bool {
-				return slices.ContainsFunc(c.CarrierAttribute, func(a *carrierid.CarrierAttribute) bool {
-					if !slices.Contains(a.MccmncTuple, *wantMatch.MccMnc) {
-						return false
-					}
-					if wantMatch.MvnoData == nil {
-						return len(a.ImsiPrefixXpattern) == 0 &&
-							len(a.Spn) == 0 &&
-							len(a.Plmn) == 0 &&
-							len(a.Gid1) == 0 &&
-							len(a.Gid2) == 0 &&
-							len(a.PreferredApn) == 0 &&
-							len(a.IccidPrefix) == 0 &&
-							len(a.PrivilegeAccessRule) == 0
-					}
-					switch wantData := wantMatch.MvnoData.(type) {
-					case *carrier_list.CarrierId_Spn:
-						return len(a.ImsiPrefixXpattern) == 0 &&
-							slices.ContainsFunc(a.Spn, func(e string) bool {
-								return strings.EqualFold(e, wantData.Spn)
-							}) &&
-							len(a.Plmn) == 0 &&
-							len(a.Gid1) == 0 &&
-							len(a.Gid2) == 0 &&
-							len(a.PreferredApn) == 0 &&
-							len(a.IccidPrefix) == 0 &&
-							len(a.PrivilegeAccessRule) == 0
-					case *carrier_list.CarrierId_Imsi:
-						return slices.ContainsFunc(a.ImsiPrefixXpattern, func(matchPattern string) bool {
-							if len(matchPattern) < len(wantData.Imsi) {
-								return false
-							}
-							for i, wantDigit := range []byte(wantData.Imsi) {
-								matchDigit := matchPattern[i]
-								switch {
-								case wantDigit == matchDigit:
-								case (wantDigit == 'x' || wantDigit == 'X') && (matchDigit == 'x' || matchDigit == 'X'):
-								case matchDigit == 'x' || matchDigit == 'X':
-								default:
+		for _, cs := range carrier {
+			for _, wantMatch := range cs.CarrierId {
+				i := slices.IndexFunc(carrierId.CarrierId, func(c *carrierid.CarrierId) bool {
+					return slices.ContainsFunc(c.CarrierAttribute, func(a *carrierid.CarrierAttribute) bool {
+						if !slices.Contains(a.MccmncTuple, *wantMatch.MccMnc) {
+							return false
+						}
+						if wantMatch.MvnoData == nil {
+							return len(a.ImsiPrefixXpattern) == 0 &&
+								len(a.Spn) == 0 &&
+								len(a.Plmn) == 0 &&
+								len(a.Gid1) == 0 &&
+								len(a.Gid2) == 0 &&
+								len(a.PreferredApn) == 0 &&
+								len(a.IccidPrefix) == 0 &&
+								len(a.PrivilegeAccessRule) == 0
+						}
+						switch wantData := wantMatch.MvnoData.(type) {
+						case *carrier_list.CarrierId_Spn:
+							return len(a.ImsiPrefixXpattern) == 0 &&
+								slices.ContainsFunc(a.Spn, func(e string) bool {
+									return strings.EqualFold(e, wantData.Spn)
+								}) &&
+								len(a.Plmn) == 0 &&
+								len(a.Gid1) == 0 &&
+								len(a.Gid2) == 0 &&
+								len(a.PreferredApn) == 0 &&
+								len(a.IccidPrefix) == 0 &&
+								len(a.PrivilegeAccessRule) == 0
+						case *carrier_list.CarrierId_Imsi:
+							return slices.ContainsFunc(a.ImsiPrefixXpattern, func(matchPattern string) bool {
+								if len(matchPattern) < len(wantData.Imsi) {
 									return false
 								}
-							}
-							return true
-						}) &&
-							len(a.Spn) == 0 &&
-							len(a.Plmn) == 0 &&
-							len(a.Gid1) == 0 &&
-							len(a.Gid2) == 0 &&
-							len(a.PreferredApn) == 0 &&
-							len(a.IccidPrefix) == 0 &&
-							len(a.PrivilegeAccessRule) == 0
-					case *carrier_list.CarrierId_Gid1:
-						return len(a.ImsiPrefixXpattern) == 0 &&
-							len(a.Spn) == 0 &&
-							len(a.Plmn) == 0 &&
-							slices.ContainsFunc(a.Gid1, func(e string) bool {
-								return strings.EqualFold(e, wantData.Gid1)
+								for i, wantDigit := range []byte(wantData.Imsi) {
+									matchDigit := matchPattern[i]
+									switch {
+									case wantDigit == matchDigit:
+									case (wantDigit == 'x' || wantDigit == 'X') && (matchDigit == 'x' || matchDigit == 'X'):
+									case matchDigit == 'x' || matchDigit == 'X':
+									default:
+										return false
+									}
+								}
+								return true
 							}) &&
-							len(a.Gid2) == 0 &&
-							len(a.PreferredApn) == 0 &&
-							len(a.IccidPrefix) == 0 &&
-							len(a.PrivilegeAccessRule) == 0
-					default:
-						panic("unhandled mnvo data type")
-					}
+								len(a.Spn) == 0 &&
+								len(a.Plmn) == 0 &&
+								len(a.Gid1) == 0 &&
+								len(a.Gid2) == 0 &&
+								len(a.PreferredApn) == 0 &&
+								len(a.IccidPrefix) == 0 &&
+								len(a.PrivilegeAccessRule) == 0
+						case *carrier_list.CarrierId_Gid1:
+							return len(a.ImsiPrefixXpattern) == 0 &&
+								len(a.Spn) == 0 &&
+								len(a.Plmn) == 0 &&
+								slices.ContainsFunc(a.Gid1, func(e string) bool {
+									return strings.EqualFold(e, wantData.Gid1)
+								}) &&
+								len(a.Gid2) == 0 &&
+								len(a.PreferredApn) == 0 &&
+								len(a.IccidPrefix) == 0 &&
+								len(a.PrivilegeAccessRule) == 0
+						default:
+							panic("unhandled mnvo data type")
+						}
+					})
 				})
-			})
-			if i != -1 {
-				carrierMapID[canonicalName] = append(carrierMapID[canonicalName], carrierId.CarrierId[i])
-				if other, ok := carrierIdMatchedExact[i]; ok {
-					slog.Warn("multiple carriersettings carriers matched a single carrierId exactly", "canonical_name", canonicalName, "other_canonical_name", other, "carrier_id", *carrierId.CarrierId[i].CanonicalId)
+				if i != -1 {
+					// TODO: improve this, maybe filter by all instead of one
+					other, ok := carrierIdMatchedExact[i]
+					if !ok || other != canonicalName {
+						carrierIdMatchedExact[i] = canonicalName
+					}
+					if ok && other != canonicalName {
+						slog.Warn("multiple carriersettings carriers matched a single carrierId exactly", "canonical_name", canonicalName, "other_canonical_name", other, "carrier_id", *carrierId.CarrierId[i].CanonicalId)
+					}
+					if !slices.Contains(carrierMapID[canonicalName], carrierId.CarrierId[i]) {
+						carrierMapID[canonicalName] = append(carrierMapID[canonicalName], carrierId.CarrierId[i])
+					}
 				}
-				carrierIdMatchedExact[i] = canonicalName
 			}
 		}
 		if n := len(carrierMapID[canonicalName]); n == 0 {
@@ -230,26 +241,34 @@ func main() {
 		if _, ok := carrierMapID[canonicalName]; ok {
 			continue
 		}
-		for _, wantMatch := range carrier.CarrierId {
-			var possibleMatches []int
-			for i, c := range carrierId.CarrierId {
-				if _, ok := carrierIdMatchedExact[i]; ok {
-					continue
+		for _, cs := range carrier {
+			for _, wantMatch := range cs.CarrierId {
+				var possibleMatches []int
+				for i, c := range carrierId.CarrierId {
+					if _, ok := carrierIdMatchedExact[i]; ok {
+						continue
+					}
+					if slices.ContainsFunc(c.CarrierAttribute, func(a *carrierid.CarrierAttribute) bool {
+						return slices.Contains(a.MccmncTuple, *wantMatch.MccMnc)
+					}) {
+						possibleMatches = append(possibleMatches, i)
+					}
 				}
-				if slices.ContainsFunc(c.CarrierAttribute, func(a *carrierid.CarrierAttribute) bool {
-					return slices.Contains(a.MccmncTuple, *wantMatch.MccMnc)
-				}) {
-					possibleMatches = append(possibleMatches, i)
+				if len(possibleMatches) == 1 {
+					// TODO: improve this
+					i := possibleMatches[0]
+					other, ok := carrierIdMatchedPLMNOnly[i]
+					if !ok || other != canonicalName {
+						carrierIdMatchedPLMNOnly[i] = canonicalName
+						slog.Warn("added a carrierId match for a carriersettings carrier by the plmn only", "canonical_name", canonicalName, "carrier_id", *carrierId.CarrierId[i].CanonicalId, "name", carrierId.CarrierId[i].GetCarrierName)
+					}
+					if ok && other != canonicalName {
+						slog.Warn("multiple carriersettings carriers which idn't match a single carrierId exactly matched a non-exactly-matched carrierId by the just the PLMN", "canonical_name", canonicalName, "other_canonical_name", other, "carrier_id", *carrierId.CarrierId[i].CanonicalId)
+					}
+					if !slices.Contains(carrierMapID[canonicalName], carrierId.CarrierId[i]) {
+						carrierMapID[canonicalName] = append(carrierMapID[canonicalName], carrierId.CarrierId[i])
+					}
 				}
-			}
-			if len(possibleMatches) == 1 {
-				i := possibleMatches[0]
-				carrierMapID[canonicalName] = append(carrierMapID[canonicalName], carrierId.CarrierId[i])
-				if other, ok := carrierIdMatchedPLMNOnly[i]; ok {
-					slog.Warn("multiple carriersettings carriers which idn't match a single carrierId exactly matched a non-exactly-matched carrierId by the just the PLMN", "canonical_name", canonicalName, "other_canonical_name", other, "carrier_id", *carrierId.CarrierId[i].CanonicalId)
-				}
-				carrierIdMatchedPLMNOnly[i] = canonicalName
-				slog.Warn("added a carrierId match for a carriersettings carrier by the plmn only", "canonical_name", canonicalName, "carrier_id", *carrierId.CarrierId[i].CanonicalId, "name", carrierId.CarrierId[i].GetCarrierName)
 			}
 		}
 	}
@@ -453,40 +472,42 @@ func main() {
 					canonicalIDs = append(canonicalIDs, -1)
 				}
 				for _, canonicalID := range canonicalIDs {
-					for _, c := range carrier.CarrierId {
-						if c.MccMnc == nil {
-							slog.Warn("skipping carrier match without mccmnc")
-							continue
-						}
-						tmp := s
-						if canonicalID != -1 {
-							tmp.CarrierID = canonicalID
-						}
-						tmp.OperatorNumeric = *c.MccMnc
-
-						if c.MvnoData != nil {
-							switch d := c.GetMvnoData().(type) {
-							case *carrier_list.CarrierId_Spn:
-								tmp.MVNOType = apn.MVNO_TYPE_SPN
-								tmp.MVNOMatchData = d.Spn
-							case *carrier_list.CarrierId_Imsi:
-								tmp.MVNOType = apn.MVNO_TYPE_IMSI
-								tmp.MVNOMatchData = d.Imsi
-							case *carrier_list.CarrierId_Gid1:
-								tmp.MVNOType = apn.MVNO_TYPE_GID
-								tmp.MVNOMatchData = d.Gid1
-							default:
-								panic("unhandled mnvo data type")
+					for _, cs := range carrier {
+						for _, c := range cs.CarrierId {
+							if c.MccMnc == nil {
+								slog.Warn("skipping carrier match without mccmnc")
+								continue
 							}
-						}
+							tmp := s
+							if canonicalID != -1 {
+								tmp.CarrierID = canonicalID
+							}
+							tmp.OperatorNumeric = *c.MccMnc
 
-						apns = append(apns, ConvertedAPN{
-							Comment:       canonicalName,
-							CanonicalName: canonicalName,
-							Setting:       tmp,
-							UserVisible:   src.GetUserVisible(),
-							UserEditable:  src.GetUserEditable(),
-						})
+							if c.MvnoData != nil {
+								switch d := c.GetMvnoData().(type) {
+								case *carrier_list.CarrierId_Spn:
+									tmp.MVNOType = apn.MVNO_TYPE_SPN
+									tmp.MVNOMatchData = d.Spn
+								case *carrier_list.CarrierId_Imsi:
+									tmp.MVNOType = apn.MVNO_TYPE_IMSI
+									tmp.MVNOMatchData = d.Imsi
+								case *carrier_list.CarrierId_Gid1:
+									tmp.MVNOType = apn.MVNO_TYPE_GID
+									tmp.MVNOMatchData = d.Gid1
+								default:
+									panic("unhandled mnvo data type")
+								}
+							}
+
+							apns = append(apns, ConvertedAPN{
+								Comment:       canonicalName,
+								CanonicalName: canonicalName,
+								Setting:       tmp,
+								UserVisible:   src.GetUserVisible(),
+								UserEditable:  src.GetUserEditable(),
+							})
+						}
 					}
 				}
 				if expandAdditionalFromCarrierID {

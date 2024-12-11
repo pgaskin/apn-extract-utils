@@ -64,7 +64,7 @@ func XMLAttrSeq(s apn.Setting, err *error) iter.Seq2[string, string] {
 				}
 			}
 			if v := s.ProxyPort; v > 0 {
-				if !yield("port", strconv.Itoa(int(s.ProxyPort))) {
+				if !yield("port", strconv.Itoa(int(v))) {
 					return nil
 				}
 			}
@@ -74,7 +74,7 @@ func XMLAttrSeq(s apn.Setting, err *error) iter.Seq2[string, string] {
 				}
 			}
 			if v := s.MMSProxyPort; v > 0 {
-				if !yield("mmsport", strconv.Itoa(int(s.ProxyPort))) {
+				if !yield("mmsport", strconv.Itoa(int(v))) {
 					return nil
 				}
 			}

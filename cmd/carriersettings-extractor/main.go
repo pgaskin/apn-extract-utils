@@ -7,15 +7,19 @@ import (
 	"maps"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/pgaskin/apn-extract-utils/aosp/apn"
 	"github.com/pgaskin/apn-extract-utils/aosp/apnsconf"
 	"github.com/pgaskin/apn-extract-utils/aosp/carrier_list"
 	"github.com/pgaskin/apn-extract-utils/aosp/carrier_settings"
+	"github.com/pgaskin/apn-extract-utils/aosp/carrierid"
 	"github.com/pgaskin/xmlwriter"
+	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -29,9 +33,33 @@ func main() {
 	})))
 
 	var (
-		pixelCarrierSettings     = os.DirFS("/data/android/lineage/vendor/google/caiman/proprietary/product/etc/CarrierSettings")
-		expandLegacyCarrierMatch = true
+		src                     = os.DirFS("/data/android/lineage")
+		pixelCarrierSettings, _ = fs.Sub(src, "vendor/google/caiman/proprietary/product/etc/CarrierSettings")
+		onlyCarrierIDMatch      = false
+		//expandLegacyMatchFromCarrierId   = true
+		debugDumpText = true
 	)
+
+	txt := prototext.MarshalOptions{
+		EmitUnknown:  true,
+		Indent:       "  ",
+		AllowPartial: true,
+	}
+
+	if debugDumpText {
+		os.MkdirAll("dbg", 0777)
+	}
+
+	carrierId, err := openProto[*carrierid.CarrierList](src, "packages/providers/TelephonyProvider/assets/sdk34_carrier_id/carrier_list.pb")
+	if err != nil {
+		panic(err)
+	}
+	slog.Info("loaded carrier identification", "total", len(carrierId.CarrierId))
+
+	if debugDumpText {
+		buf, _ := txt.Marshal(carrierId)
+		os.WriteFile(filepath.Join("dbg", "carrierId.textpb"), buf, 0666)
+	}
 
 	carrierList, err := openProto[*carrier_list.CarrierList](pixelCarrierSettings, "carrier_list.pb")
 	if err != nil {
@@ -39,10 +67,21 @@ func main() {
 	}
 	slog.Info("loaded carrier list", "total", len(carrierList.Entry))
 
+	if debugDumpText {
+		buf, _ := txt.Marshal(carrierList)
+		os.WriteFile(filepath.Join("dbg", "carrier_list.textpb"), buf, 0666)
+	}
+
 	genericSettings, err := openProto[*carrier_settings.MultiCarrierSettings](pixelCarrierSettings, "others.pb")
 	if err != nil {
 		panic(err)
 	}
+
+	if debugDumpText {
+		buf, _ := txt.Marshal(genericSettings)
+		os.WriteFile(filepath.Join("dbg", "others.textpb"), buf, 0666)
+	}
+
 	allSettings := map[string]*carrier_settings.CarrierSettings{} // [canonicalName]
 	for _, cs := range genericSettings.Setting {
 		slog.Debug("loaded generic settings", "canonical_name", cs.GetCanonicalName())
@@ -58,6 +97,10 @@ func main() {
 		carrierSettings, err := openProto[*carrier_settings.CarrierSettings](pixelCarrierSettings, name)
 		if err != nil {
 			return err
+		}
+		if debugDumpText {
+			buf, _ := txt.Marshal(genericSettings)
+			os.WriteFile(filepath.Join("dbg", strings.TrimSuffix(filepath.FromSlash(name), ".pb")+".textpb"), buf, 0666)
 		}
 		specificSettings++
 		slog.Debug("loaded settings", "name", name, "canonical_name", carrierSettings.GetCanonicalName())
@@ -77,12 +120,98 @@ func main() {
 			return c.GetCanonicalName() == canonicalName
 		})
 		if i == -1 {
-			slog.Error("failed to find carrier id for carrier, dropping", "canonical_name", canonicalName)
+			slog.Error("failed to find carrier_list entry for carrier, dropping", "canonical_name", canonicalName)
 			delete(allSettings, canonicalName)
 			continue
 		}
 		carrierMap[canonicalName] = carrierList.Entry[i]
 	}
+	slog.Info("mapped carrier_settings to carrier_list entries")
+
+	carrierMapID := map[string][]*carrierid.CarrierId{} // [canonicalName]
+	for _, canonicalName := range slices.Sorted(maps.Keys(allSettings)) {
+		carrier := carrierMap[canonicalName]
+		for _, wantMatch := range carrier.CarrierId {
+			i := slices.IndexFunc(carrierId.CarrierId, func(c *carrierid.CarrierId) bool {
+				return slices.ContainsFunc(c.CarrierAttribute, func(a *carrierid.CarrierAttribute) bool {
+					if !slices.Contains(a.MccmncTuple, *wantMatch.MccMnc) {
+						return false
+					}
+					if wantMatch.MvnoData == nil {
+						return len(a.ImsiPrefixXpattern) == 0 &&
+							len(a.Spn) == 0 &&
+							len(a.Plmn) == 0 &&
+							len(a.Gid1) == 0 &&
+							len(a.Gid2) == 0 &&
+							len(a.PreferredApn) == 0 &&
+							len(a.IccidPrefix) == 0 &&
+							len(a.PrivilegeAccessRule) == 0
+					}
+					switch wantData := wantMatch.MvnoData.(type) {
+					case *carrier_list.CarrierId_Spn:
+						return len(a.ImsiPrefixXpattern) == 0 &&
+							slices.ContainsFunc(a.Spn, func(e string) bool {
+								return strings.EqualFold(e, wantData.Spn)
+							}) &&
+							len(a.Plmn) == 0 &&
+							len(a.Gid1) == 0 &&
+							len(a.Gid2) == 0 &&
+							len(a.PreferredApn) == 0 &&
+							len(a.IccidPrefix) == 0 &&
+							len(a.PrivilegeAccessRule) == 0
+					case *carrier_list.CarrierId_Imsi:
+						return slices.ContainsFunc(a.ImsiPrefixXpattern, func(matchPattern string) bool {
+							if len(matchPattern) < len(wantData.Imsi) {
+								return false
+							}
+							for i, wantDigit := range []byte(wantData.Imsi) {
+								matchDigit := matchPattern[i]
+								switch {
+								case wantDigit == matchDigit:
+								case (wantDigit == 'x' || wantDigit == 'X') && (matchDigit == 'x' || matchDigit == 'X'):
+								case matchDigit == 'x' || matchDigit == 'X':
+								default:
+									return false
+								}
+							}
+							return true
+						}) &&
+							len(a.Spn) == 0 &&
+							len(a.Plmn) == 0 &&
+							len(a.Gid1) == 0 &&
+							len(a.Gid2) == 0 &&
+							len(a.PreferredApn) == 0 &&
+							len(a.IccidPrefix) == 0 &&
+							len(a.PrivilegeAccessRule) == 0
+					case *carrier_list.CarrierId_Gid1:
+						return len(a.ImsiPrefixXpattern) == 0 &&
+							len(a.Spn) == 0 &&
+							len(a.Plmn) == 0 &&
+							slices.ContainsFunc(a.Gid1, func(e string) bool {
+								return strings.EqualFold(e, wantData.Gid1)
+							}) &&
+							len(a.Gid2) == 0 &&
+							len(a.PreferredApn) == 0 &&
+							len(a.IccidPrefix) == 0 &&
+							len(a.PrivilegeAccessRule) == 0
+					default:
+						panic("unhandled mnvo data type")
+					}
+				})
+			})
+			if i != -1 {
+				carrierMapID[canonicalName] = append(carrierMapID[canonicalName], carrierId.CarrierId[i])
+			}
+		}
+		if n := len(carrierMapID[canonicalName]); n == 0 {
+			slog.Warn("no carrierId match for carriersettings carrier", "canonical_name", canonicalName)
+			continue
+		} else if n > 1 {
+			slog.Warn("more than one carrierId match for carriersettings carrier", "canonical_name", canonicalName)
+			continue
+		}
+	}
+	slog.Info("mapped carrier_list entries to carrierId", "have", len(carrierMapID), "missing", len(carrierMap)-len(carrierMapID))
 
 	type ConvertedAPN struct {
 		CanonicalName string
@@ -93,6 +222,7 @@ func main() {
 	var apns []ConvertedAPN
 	for _, canonicalName := range slices.Sorted(maps.Keys(allSettings)) {
 		carrier := carrierMap[canonicalName]
+		carrierIDs := carrierMapID[canonicalName]
 		carrierSettings := allSettings[canonicalName]
 
 		slog := slog.With("canonical_name", canonicalName)
@@ -258,32 +388,10 @@ func main() {
 				slog.Warn("check failed for apn", "error", err)
 			}
 
-			// TODO: set carrierID by matching telephonyprovider carrierid
-
-			if expandLegacyCarrierMatch {
-				for _, c := range carrier.CarrierId {
-					if c.MccMnc == nil {
-						slog.Warn("skipping carrier match without mccmnc")
-						continue
-					}
+			if onlyCarrierIDMatch {
+				for _, c := range carrierIDs {
 					tmp := s
-					tmp.OperatorNumeric = *c.MccMnc
-
-					if c.MvnoData != nil {
-						switch d := c.GetMvnoData().(type) {
-						case *carrier_list.CarrierId_Spn:
-							tmp.MVNOType = apn.MVNO_TYPE_SPN
-							tmp.MVNOMatchData = d.Spn
-						case *carrier_list.CarrierId_Imsi:
-							tmp.MVNOType = apn.MVNO_TYPE_IMSI
-							tmp.MVNOMatchData = d.Imsi
-						case *carrier_list.CarrierId_Gid1:
-							tmp.MVNOType = apn.MVNO_TYPE_GID
-							tmp.MVNOMatchData = d.Gid1
-						default:
-							panic("unhandled mnvo data type")
-						}
-					}
+					tmp.CarrierID = int(*c.CanonicalId)
 
 					apns = append(apns, ConvertedAPN{
 						CanonicalName: canonicalName,
@@ -291,6 +399,50 @@ func main() {
 						UserVisible:   src.GetUserVisible(),
 						UserEditable:  src.GetUserEditable(),
 					})
+				}
+			} else {
+				var canonicalIDs []int
+				for _, cm := range carrierIDs {
+					canonicalIDs = append(canonicalIDs, int(*cm.CanonicalId))
+				}
+				if len(canonicalIDs) == 0 {
+					canonicalIDs = append(canonicalIDs, -1)
+				}
+				for _, canonicalID := range canonicalIDs {
+					for _, c := range carrier.CarrierId {
+						if c.MccMnc == nil {
+							slog.Warn("skipping carrier match without mccmnc")
+							continue
+						}
+						tmp := s
+						if canonicalID != -1 {
+							tmp.CarrierID = canonicalID
+						}
+						tmp.OperatorNumeric = *c.MccMnc
+
+						if c.MvnoData != nil {
+							switch d := c.GetMvnoData().(type) {
+							case *carrier_list.CarrierId_Spn:
+								tmp.MVNOType = apn.MVNO_TYPE_SPN
+								tmp.MVNOMatchData = d.Spn
+							case *carrier_list.CarrierId_Imsi:
+								tmp.MVNOType = apn.MVNO_TYPE_IMSI
+								tmp.MVNOMatchData = d.Imsi
+							case *carrier_list.CarrierId_Gid1:
+								tmp.MVNOType = apn.MVNO_TYPE_GID
+								tmp.MVNOMatchData = d.Gid1
+							default:
+								panic("unhandled mnvo data type")
+							}
+						}
+
+						apns = append(apns, ConvertedAPN{
+							CanonicalName: canonicalName,
+							Setting:       tmp,
+							UserVisible:   src.GetUserVisible(),
+							UserEditable:  src.GetUserEditable(),
+						})
+					}
 				}
 			}
 		}

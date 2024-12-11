@@ -13,6 +13,8 @@ import (
 // https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/telephony/java/android/telephony/data/ApnSetting.java;drc=4ba139804a0a420c376d8fffbcb7e9f2fa3f65a8
 // https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/telephony/java/android/telephony/TelephonyManager.java;l=14766;drc=be5b10f9022f6e4aeab9c39f50c1e6ac27e19eae
 
+// TODO: use codegen for generating the enum/text-bitmask/numeric-bitmask methods
+
 type NetworkType int
 
 const (
@@ -412,7 +414,7 @@ func (x Type) MarshalText() ([]byte, error) {
 			panic("wtf")
 		}
 	}
-	return nil, nil
+	return b, nil
 }
 
 func (x Protocol) Valid() bool {
@@ -516,6 +518,8 @@ func (x Infrastructure) MarshalText() ([]byte, error) {
 		return []byte("cellular"), nil
 	case INFRASTRUCTURE_SATELLITE:
 		return []byte("satellite"), nil
+	case INFRASTRUCTURE_CELLULAR | INFRASTRUCTURE_SATELLITE:
+		return []byte("cellular|satellite"), nil
 	default:
 		return nil, fmt.Errorf("unknown infrastructure type %#v", x)
 	}
@@ -527,6 +531,8 @@ func (p *Infrastructure) UnmarshalText(t []byte) (Infrastructure, error) {
 		return INFRASTRUCTURE_CELLULAR, nil
 	case "satellite":
 		return INFRASTRUCTURE_SATELLITE, nil
+	case "cellular|satellite", "satellite|cellular":
+		return INFRASTRUCTURE_CELLULAR | INFRASTRUCTURE_SATELLITE, nil
 	default:
 		return INFRASTRUCTURE_CELLULAR | INFRASTRUCTURE_SATELLITE, fmt.Errorf("unknown infrastructure type %q", t)
 	}
@@ -549,7 +555,8 @@ type Setting struct {
 	RoamingProtocol             Protocol
 	MTUv4                       int
 	MTUv6                       int
-	CarrierEnabled              bool
+	CarrierEnabled              bool // apn is enabled
+	ProfileID                   int
 	NetworkTypeBitmask          NetworkTypeBitmask
 	LingeringNetworkTypeBitmask NetworkTypeBitmask
 	Persistent                  bool // modem cognitive
@@ -587,6 +594,7 @@ func Empty() Setting {
 		MTUv4:                       0,
 		MTUv6:                       0,
 		CarrierEnabled:              false,
+		ProfileID:                   0,
 		NetworkTypeBitmask:          0,
 		LingeringNetworkTypeBitmask: 0,
 		Persistent:                  false,

@@ -106,7 +106,7 @@ func main() {
 			return nil
 		}
 		if debugDumpText {
-			buf, _ := txt.Marshal(genericSettings)
+			buf, _ := txt.Marshal(carrierSettings)
 			os.WriteFile(filepath.Join("dbg", strings.TrimSuffix(filepath.FromSlash(name), ".pb")+".textpb"), buf, 0666)
 		}
 		specificSettings++

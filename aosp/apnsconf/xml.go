@@ -8,6 +8,8 @@ import (
 	"github.com/pgaskin/apn-extract-utils/aosp/apn"
 )
 
+// TODO: target/min sdk, version? for checking attrs and deciding whether to output deprecated or new ones
+
 const Version = 8
 
 // https://cs.android.com/android/platform/superproject/main/+/main:packages/providers/TelephonyProvider/src/com/android/providers/telephony/TelephonyProvider.java;l=2716;drc=be5b10f9022f6e4aeab9c39f50c1e6ac27e19eae (getRow)

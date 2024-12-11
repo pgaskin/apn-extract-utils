@@ -33,11 +33,11 @@ func main() {
 	})))
 
 	var (
-		src                     = os.DirFS("/data/android/lineage")
-		pixelCarrierSettings, _ = fs.Sub(src, "vendor/google/caiman/proprietary/product/etc/CarrierSettings")
-		onlyCarrierIDMatch      = false
-		//expandLegacyMatchFromCarrierId   = true
-		debugDumpText = true
+		src                           = os.DirFS("/data/android/lineage")
+		pixelCarrierSettings, _       = fs.Sub(src, "vendor/google/caiman/proprietary/product/etc/CarrierSettings")
+		onlyCarrierIDMatch            = false
+		expandAdditionalFromCarrierID = true
+		debugDumpText                 = true
 	)
 
 	txt := prototext.MarshalOptions{
@@ -129,6 +129,7 @@ func main() {
 	slog.Info("mapped carrier_settings to carrier_list entries")
 
 	carrierMapID := map[string][]*carrierid.CarrierId{} // [canonicalName]
+	carrierIdMatchedExact := map[int]string{}
 	for _, canonicalName := range slices.Sorted(maps.Keys(allSettings)) {
 		carrier := carrierMap[canonicalName]
 		for _, wantMatch := range carrier.CarrierId {
@@ -201,6 +202,10 @@ func main() {
 			})
 			if i != -1 {
 				carrierMapID[canonicalName] = append(carrierMapID[canonicalName], carrierId.CarrierId[i])
+				if other, ok := carrierIdMatchedExact[i]; ok {
+					slog.Warn("multiple carriersettings carriers matched a single carrierId exactly", "canonical_name", canonicalName, "other_canonical_name", other, "carrier_id", *carrierId.CarrierId[i].CanonicalId)
+				}
+				carrierIdMatchedExact[i] = canonicalName
 			}
 		}
 		if n := len(carrierMapID[canonicalName]); n == 0 {
@@ -211,9 +216,40 @@ func main() {
 			continue
 		}
 	}
-	slog.Info("mapped carrier_list entries to carrierId", "have", len(carrierMapID), "missing", len(carrierMap)-len(carrierMapID))
+	slog.Info("mapped carrier_list entries to carrierId (exact matches)", "have", len(carrierMapID), "missing", len(carrierMap)-len(carrierMapID))
+	carrierIdMatchedPLMNOnly := map[int]string{}
+	for _, canonicalName := range slices.Sorted(maps.Keys(allSettings)) {
+		carrier := carrierMap[canonicalName]
+		if _, ok := carrierMapID[canonicalName]; ok {
+			continue
+		}
+		for _, wantMatch := range carrier.CarrierId {
+			var possibleMatches []int
+			for i, c := range carrierId.CarrierId {
+				if _, ok := carrierIdMatchedExact[i]; ok {
+					continue
+				}
+				if slices.ContainsFunc(c.CarrierAttribute, func(a *carrierid.CarrierAttribute) bool {
+					return slices.Contains(a.MccmncTuple, *wantMatch.MccMnc)
+				}) {
+					possibleMatches = append(possibleMatches, i)
+				}
+			}
+			if len(possibleMatches) == 1 {
+				i := possibleMatches[0]
+				carrierMapID[canonicalName] = append(carrierMapID[canonicalName], carrierId.CarrierId[i])
+				if other, ok := carrierIdMatchedPLMNOnly[i]; ok {
+					slog.Warn("multiple carriersettings carriers which idn't match a single carrierId exactly matched a non-exactly-matched carrierId by the just the PLMN", "canonical_name", canonicalName, "other_canonical_name", other, "carrier_id", *carrierId.CarrierId[i].CanonicalId)
+				}
+				carrierIdMatchedPLMNOnly[i] = canonicalName
+				slog.Warn("added a carrierId match for a carriersettings carrier by the plmn only", "canonical_name", canonicalName, "carrier_id", *carrierId.CarrierId[i].CanonicalId, "name", carrierId.CarrierId[i].GetCarrierName)
+			}
+		}
+	}
+	slog.Info("mapped carrier_list entries to carrierId (plus plmn-only matches of remaining carrierId entries)", "have", len(carrierMapID), "missing", len(carrierMap)-len(carrierMapID))
 
 	type ConvertedAPN struct {
+		Comment       string
 		CanonicalName string
 		Setting       apn.Setting
 		UserVisible   bool
@@ -394,6 +430,7 @@ func main() {
 					tmp.CarrierID = int(*c.CanonicalId)
 
 					apns = append(apns, ConvertedAPN{
+						Comment:       canonicalName,
 						CanonicalName: canonicalName,
 						Setting:       tmp,
 						UserVisible:   src.GetUserVisible(),
@@ -437,11 +474,18 @@ func main() {
 						}
 
 						apns = append(apns, ConvertedAPN{
+							Comment:       canonicalName,
 							CanonicalName: canonicalName,
 							Setting:       tmp,
 							UserVisible:   src.GetUserVisible(),
 							UserEditable:  src.GetUserEditable(),
 						})
+					}
+				}
+				if expandAdditionalFromCarrierID {
+					for _, cm := range carrierIDs {
+						_ = cm
+						// TODO: expand from cm.CarrierAttribute? will need to warn if there is more than one match condition, since that can't be expressed
 					}
 				}
 			}
@@ -455,10 +499,10 @@ func main() {
 	w.Attr(nil, "version", strconv.Itoa(apnsconf.Version))
 	var last string
 	for _, c := range apns {
-		if last == "" || last != c.CanonicalName {
-			last = c.CanonicalName
+		if last == "" || last != c.Comment {
+			last = c.Comment
 			w.BlankLine()
-			w.Comment(true, " "+c.CanonicalName+" ")
+			w.Comment(true, " "+c.Comment+" ")
 		}
 		w.Start(nil, "apn")
 		var err error

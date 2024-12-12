@@ -12,6 +12,10 @@ import (
 
 // https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/telephony/java/android/telephony/data/ApnSetting.java;drc=4ba139804a0a420c376d8fffbcb7e9f2fa3f65a8
 // https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/telephony/java/android/telephony/TelephonyManager.java;l=14766;drc=be5b10f9022f6e4aeab9c39f50c1e6ac27e19eae
+// https://developer.android.com/sdk/api_diff/33/changes/android.telephony.data.ApnSetting (mtu v4, mtu v6, profile id, persistent, apn type enterprise)
+// https://developer.android.com/sdk/api_diff/31/changes/android.telephony.data.ApnSetting (apn type bip, vsim)
+// https://developer.android.com/sdk/api_diff/30/changes/android.telephony.data.ApnSetting (apn type xcap)
+// https://developer.android.com/sdk/api_diff/29/changes/android.telephony.data.ApnSetting (carrier id, protocol non ip, protocol unstructured, apn type mcx)
 
 // TODO: use codegen for generating the enum/text-bitmask/numeric-bitmask methods
 
@@ -553,8 +557,8 @@ type Setting struct {
 	OperatorNumeric             string
 	Protocol                    Protocol
 	RoamingProtocol             Protocol
-	MTUv4                       int
-	MTUv6                       int
+	MTUv4                       int  // not used when DataCallResponse includes a MTU
+	MTUv6                       int  // not used when DataCallResponse includes a MTU
 	CarrierEnabled              bool // apn is enabled
 	ProfileID                   int
 	NetworkTypeBitmask          NetworkTypeBitmask
@@ -571,7 +575,12 @@ type Setting struct {
 	AlwaysOn                    bool
 	InfrastructureBitmask       Infrastructure
 	ESIMBootstrapProvisioning   bool
-	// skipped ID, ProfileID, PermanentFailed (those are runtime fields)
+	// skipped ID, PermanentFailed (those are runtime fields)
+
+	Server        string        // not part of ApnSetting, but part of the apns
+	UserVisible   bool          // not part of ApnSetting, but part of the apns
+	UserEditable  bool          // not part of ApnSetting, but part of the apns
+	BearerBitmask BearerBitmask // so we can preserve it for round-trip conversions since bearer->network bitmask is lossy
 }
 
 // Empty returns a new Setting with the default values.
@@ -609,6 +618,11 @@ func Empty() Setting {
 		AlwaysOn:                    false,
 		InfrastructureBitmask:       INFRASTRUCTURE_CELLULAR | INFRASTRUCTURE_SATELLITE,
 		ESIMBootstrapProvisioning:   false,
+
+		Server:        "",
+		UserVisible:   true,
+		UserEditable:  true,
+		BearerBitmask: 0,
 	}
 }
 
@@ -626,6 +640,12 @@ func (s Setting) Check() error {
 	if s.APNTypeBitmask&TYPE_MMS != 0 {
 		if u, err := url.Parse(s.MMSProxyAddress); err == nil && u.Scheme != "" {
 			return fmt.Errorf("mms proxy should be a hostname, not a url")
+		}
+	}
+	// extra: check that bearer bitmask is in sync with network type bitmask if set
+	if s.BearerBitmask != 0 {
+		if x, y := ConvertBearerBitmaskToNetworkTypeBitmask(s.BearerBitmask), s.NetworkTypeBitmask; x != y {
+			return fmt.Errorf("overridden bearer bitmask converted to a network bitmask (lossy) is %s, but the network type bitmask is set to %s", slices.Collect(x.Seq()), slices.Collect(y.Seq()))
 		}
 	}
 	return nil

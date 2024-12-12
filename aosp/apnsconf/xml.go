@@ -22,7 +22,7 @@ func XMLAttrSeq(s apn.Setting, err *error) iter.Seq2[string, string] {
 	return func(yield func(string, string) bool) {
 		*err = func() error {
 			// mcc/mnc/mvno_type/mvno_match_data will be replaced entirely with carrier_id matching in the future
-			if s.OperatorNumeric != "" {
+			if s.OperatorNumeric != "" && s.OperatorNumeric != "000000" {
 				if n := len(s.OperatorNumeric); n != 5 && n != 6 {
 					return fmt.Errorf("invalid operator mccmnc length %d", n)
 				}
@@ -54,7 +54,11 @@ func XMLAttrSeq(s apn.Setting, err *error) iter.Seq2[string, string] {
 					return nil
 				}
 			}
-			// N/A: string: server
+			if v := s.Server; v != "" {
+				if !yield("server", v) {
+					return nil
+				}
+			}
 			if v := s.Password; v != "" {
 				if !yield("password", v) {
 					return nil
@@ -92,14 +96,14 @@ func XMLAttrSeq(s apn.Setting, err *error) iter.Seq2[string, string] {
 					return nil
 				}
 			}
-			if v := s.Protocol; v != apn.PROTOCOL_UNKNOWN {
+			if v := s.Protocol; v != apn.PROTOCOL_UNKNOWN && v != apn.PROTOCOL_IP { // IP is assumed to be the default and left out in the official xml files
 				if b, err := v.MarshalText(); err != nil {
 					return fmt.Errorf("invalid protocol: %w", err)
 				} else if !yield("protocol", string(b)) {
 					return nil
 				}
 			}
-			if v := s.RoamingProtocol; v != apn.PROTOCOL_UNKNOWN {
+			if v := s.RoamingProtocol; v != apn.PROTOCOL_UNKNOWN && v != apn.PROTOCOL_IP { // IP is assumed to be the default and left out in the official xml files
 				if b, err := v.MarshalText(); err != nil {
 					return fmt.Errorf("invalid roaming protocol: %w", err)
 				} else if !yield("roaming_protocol", string(b)) {
@@ -132,15 +136,21 @@ func XMLAttrSeq(s apn.Setting, err *error) iter.Seq2[string, string] {
 					return nil
 				}
 			}
-			// int: mtu (deprecated, use mtu_v4 or mtu_v6 instead)
-			if v := s.MTUv4; v > 0 {
-				if !yield("mtu_v4", strconv.Itoa(v)) {
+			if s.MTUv6 <= 0 && s.MTUv4 > 0 {
+				// note: mtu is deprecated, replaced with mtu_v4 in sdk 33
+				if !yield("mtu", strconv.Itoa(s.MTUv4)) {
 					return nil
 				}
-			}
-			if v := s.MTUv6; v > 0 {
-				if !yield("mtu_v6", strconv.Itoa(v)) {
-					return nil
+			} else {
+				if v := s.MTUv4; v > 0 {
+					if !yield("mtu_v4", strconv.Itoa(v)) {
+						return nil
+					}
+				}
+				if v := s.MTUv6; v > 0 {
+					if !yield("mtu_v6", strconv.Itoa(v)) {
+						return nil
+					}
 				}
 			}
 			if v := s.APNSetID; v != 0 { // NO_SET_SET
@@ -168,8 +178,16 @@ func XMLAttrSeq(s apn.Setting, err *error) iter.Seq2[string, string] {
 					return nil
 				}
 			}
-			// N/A: bool: user_visible
-			// N/A: bool: user_editable
+			if v := s.UserVisible; v != true {
+				if !yield("user_visible", "false") {
+					return nil
+				}
+			}
+			if v := s.UserEditable; v != true {
+				if !yield("user_editable", "false") {
+					return nil
+				}
+			}
 			if v := s.AlwaysOn; v != false {
 				if !yield("always_on", "true") {
 					return nil

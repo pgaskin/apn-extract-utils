@@ -18,6 +18,7 @@ import (
 	"github.com/pgaskin/apn-extract-utils/aosp/carrier_list"
 	"github.com/pgaskin/apn-extract-utils/aosp/carrier_settings"
 	"github.com/pgaskin/apn-extract-utils/aosp/carrierid"
+	"github.com/pgaskin/apn-extract-utils/source/carriersettings"
 	"github.com/pgaskin/xmlwriter"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -26,6 +27,11 @@ import (
 // TODO: make this actually a proper command
 // TODO: refactor main logic into new source/carriersettings package
 // TODO: compare output with lineage carriersettings-extractor
+// TODO: look at logic in https://cs.android.com/android/platform/superproject/main/+/main:tools/carrier_settings/java/CarrierConfigConverterV2.java;bpv=0
+// https://android.googlesource.com/platform/packages/apps/CarrierConfig/+/master/src/com/android/carrierconfig/DefaultCarrierConfigService.java
+// https://cs.android.com/android/platform/superproject/main/+/main:frameworks/opt/telephony/src/java/com/android/internal/telephony/CarrierResolver.java;drc=be5b10f9022f6e4aeab9c39f50c1e6ac27e19eae;l=1018
+// TODO: rewrite this
+// TODO: rewrite the carrier id matching logic to actually match properly (the different fields have different levels of precedence, and matching is more than just string matching)
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
@@ -38,7 +44,7 @@ func main() {
 		onlyCarrierIDMatch            = false
 		expandAdditionalFromCarrierID = true
 		debugDumpText                 = true
-		filterNameSuffix              = "_ca"
+		filterNameSuffix              = "" //"_ca"
 	)
 
 	txt := prototext.MarshalOptions{
@@ -73,27 +79,27 @@ func main() {
 		os.WriteFile(filepath.Join("dbg", "carrier_list.textpb"), buf, 0666)
 	}
 
-	genericSettings, err := openProto[*carrier_settings.MultiCarrierSettings](pixelCarrierSettings, "others.pb")
+	tier2Settings, err := openProto[*carrier_settings.MultiCarrierSettings](pixelCarrierSettings, "others.pb")
 	if err != nil {
 		panic(err)
 	}
 
 	if debugDumpText {
-		buf, _ := txt.Marshal(genericSettings)
+		buf, _ := txt.Marshal(tier2Settings)
 		os.WriteFile(filepath.Join("dbg", "others.textpb"), buf, 0666)
 	}
 
 	allSettings := map[string]*carrier_settings.CarrierSettings{} // [canonicalName]
-	for _, cs := range genericSettings.Setting {
+	for _, cs := range tier2Settings.Setting {
 		if filterNameSuffix != "" && !strings.HasSuffix(cs.GetCanonicalName(), filterNameSuffix) {
 			continue
 		}
-		slog.Debug("loaded generic settings", "canonical_name", cs.GetCanonicalName())
+		slog.Debug("loaded tier 2 carrier settings", "canonical_name", cs.GetCanonicalName())
 		allSettings[*cs.CanonicalName] = cs
 	}
-	slog.Info("loaded generic settings", "total", len(genericSettings.Setting))
+	slog.Info("loaded tier 2 carrier settings", "total", len(tier2Settings.Setting))
 
-	var specificSettings int
+	var tier1Settings int
 	if err := fs.WalkDir(pixelCarrierSettings, ".", func(name string, d fs.DirEntry, err error) error {
 		if path.Ext(name) != ".pb" || name == "carrier_list.pb" || name == "others.pb" {
 			return nil
@@ -109,17 +115,17 @@ func main() {
 			buf, _ := txt.Marshal(carrierSettings)
 			os.WriteFile(filepath.Join("dbg", strings.TrimSuffix(filepath.FromSlash(name), ".pb")+".textpb"), buf, 0666)
 		}
-		specificSettings++
+		tier1Settings++
 		slog.Debug("loaded settings", "name", name, "canonical_name", carrierSettings.GetCanonicalName())
 		if _, ok := allSettings[*carrierSettings.CanonicalName]; ok {
-			slog.Warn("replacing generic settings", "name", name, "canonical_name", carrierSettings.GetCanonicalName())
+			slog.Warn("replacing tier 2 settings", "name", name, "canonical_name", carrierSettings.GetCanonicalName())
 		}
 		allSettings[*carrierSettings.CanonicalName] = carrierSettings
 		return nil
 	}); err != nil {
 		panic(err)
 	}
-	slog.Info("loaded specific settings", "total", specificSettings)
+	slog.Info("loaded tier 1 carrier settings", "total", tier1Settings)
 
 	carrierMap := map[string][]*carrier_list.CarrierMap{} // [canonicalName]
 	for _, c := range carrierList.Entry {
@@ -278,8 +284,6 @@ func main() {
 		Comment       string
 		CanonicalName string
 		Setting       apn.Setting
-		UserVisible   bool
-		UserEditable  bool
 	}
 	var apns []ConvertedAPN
 	for _, canonicalName := range slices.Sorted(maps.Keys(allSettings)) {
@@ -295,154 +299,13 @@ func main() {
 		}
 
 		for _, src := range carrierSettings.Apns.Apn {
-			s := apn.Empty()
-			s.CarrierEnabled = true
-			s.InfrastructureBitmask = 0
-
-			if err := func() error {
-				s.EntryName = src.GetName()
-				s.APNName = src.GetValue()
-
-				if s.EntryName == "" {
-					return fmt.Errorf("empty apn name")
-				}
-
-				s.APNTypeBitmask = 0
-				for _, t := range src.GetType() {
-					switch t {
-					case carrier_settings.ApnItem_ALL:
-						s.APNTypeBitmask |= apn.TYPE_ALL
-					case carrier_settings.ApnItem_DEFAULT:
-						s.APNTypeBitmask |= apn.TYPE_DEFAULT
-					case carrier_settings.ApnItem_MMS:
-						s.APNTypeBitmask |= apn.TYPE_MMS
-					case carrier_settings.ApnItem_SUPL:
-						s.APNTypeBitmask |= apn.TYPE_SUPL
-					case carrier_settings.ApnItem_DUN:
-						s.APNTypeBitmask |= apn.TYPE_DUN
-					case carrier_settings.ApnItem_HIPRI:
-						s.APNTypeBitmask |= apn.TYPE_HIPRI
-					case carrier_settings.ApnItem_FOTA:
-						s.APNTypeBitmask |= apn.TYPE_FOTA
-					case carrier_settings.ApnItem_IMS:
-						s.APNTypeBitmask |= apn.TYPE_IMS
-					case carrier_settings.ApnItem_CBS:
-						s.APNTypeBitmask |= apn.TYPE_CBS
-					case carrier_settings.ApnItem_IA:
-						s.APNTypeBitmask |= apn.TYPE_IA
-					case carrier_settings.ApnItem_EMERGENCY:
-						s.APNTypeBitmask |= apn.TYPE_EMERGENCY
-					case carrier_settings.ApnItem_XCAP:
-						s.APNTypeBitmask |= apn.TYPE_XCAP
-					case carrier_settings.ApnItem_UT:
-						s.APNTypeBitmask |= apn.TYPE_XCAP // TODO: is this correct?
-					case carrier_settings.ApnItem_RCS:
-						s.APNTypeBitmask |= apn.TYPE_RCS
-					default:
-						panic("unhandled apn type")
-					}
-				}
-
-				// yes, it's named bearerbitmask, but it's actually the network type bitmask
-				var bb apn.BearerBitmask
-				if v := src.GetBearerBitmask(); v != "0" {
-					if err := bb.UnmarshalText([]byte(v)); err != nil {
-						return err
-					}
-					s.NetworkTypeBitmask = apn.ConvertBearerBitmaskToNetworkTypeBitmask(bb)
-					if bb1 := apn.ConvertNetworkTypeBitmaskToBearerBitmask(s.NetworkTypeBitmask); bb1 != bb {
-						slog.Warn("lossy bearer bitmask conversion", "from", bb, "to", s.NetworkTypeBitmask, "back", bb1)
-					}
-				}
-
-				if v := src.GetServer(); v != "" {
-					slog.Warn("no mapping for server param", "value", v)
-				}
-				s.ProxyAddress = src.GetProxy()
-				if v := src.GetPort(); v != "" {
-					v, err := strconv.ParseInt(v, 10, 0)
-					if err != nil {
-						return fmt.Errorf("port: %w", err)
-					}
-					s.ProxyPort = int(v)
-				}
-				s.User = src.GetUser()
-				s.Password = src.GetPassword()
-				s.AuthType = apn.AuthType(src.GetAuthtype())
-
-				s.MMSC = src.GetMmsc()
-				s.MMSProxyAddress = src.GetMmscProxy()
-				if v := src.GetMmscProxyPort(); v != "" {
-					v, err := strconv.ParseInt(v, 10, 0)
-					if err != nil {
-						return fmt.Errorf("port: %w", err)
-					}
-					s.MMSProxyPort = int(v)
-				}
-
-				switch src.GetProtocol() {
-				case carrier_settings.ApnItem_IP:
-					s.Protocol = apn.PROTOCOL_IP
-				case carrier_settings.ApnItem_IPV6:
-					s.Protocol = apn.PROTOCOL_IPV6
-				case carrier_settings.ApnItem_IPV4V6:
-					s.Protocol = apn.PROTOCOL_IPV4V6
-				case carrier_settings.ApnItem_PPP:
-					s.Protocol = apn.PROTOCOL_PPP
-				case 4: // TODO: update pb
-					s.Protocol = apn.PROTOCOL_NON_IP
-				default:
-					panic("unhandled protocol")
-				}
-
-				switch src.GetRoamingProtocol() {
-				case carrier_settings.ApnItem_IP:
-					s.RoamingProtocol = apn.PROTOCOL_IP
-				case carrier_settings.ApnItem_IPV6:
-					s.RoamingProtocol = apn.PROTOCOL_IPV6
-				case carrier_settings.ApnItem_IPV4V6:
-					s.RoamingProtocol = apn.PROTOCOL_IPV4V6
-				case carrier_settings.ApnItem_PPP:
-					s.RoamingProtocol = apn.PROTOCOL_PPP
-				case 4: // TODO: update pb
-					s.Protocol = apn.PROTOCOL_NON_IP
-				default:
-					panic("unhandled protocol")
-				}
-
-				if v := src.GetMtu(); v != 0 {
-					// is this right?
-					if s.Protocol != apn.PROTOCOL_IPV6 || s.RoamingProtocol != apn.PROTOCOL_IPV6 {
-						s.MTUv4 = int(v)
-					}
-					if s.Protocol != apn.PROTOCOL_IP || s.RoamingProtocol != apn.PROTOCOL_IP {
-						s.MTUv6 = int(v)
-					}
-				}
-
-				if src.ProfileId != nil {
-					s.ProfileID = int(*src.ProfileId)
-				}
-				s.MaxConns = int(src.GetMaxConns())
-				s.WaitTime = int(src.GetWaitTime())
-				s.MaxConnsTime = int(src.GetMaxConnsTime())
-				s.Persistent = src.GetModemCognitive()
-				s.APNSetID = int(src.GetApnSetId())
-
-				switch src.GetSkip_464Xlat() {
-				case carrier_settings.ApnItem_SKIP_464XLAT_DEFAULT:
-					s.Skip464XLAT = apn.SKIP_464XLAT_DEFAULT
-				case carrier_settings.ApnItem_SKIP_464XLAT_DISABLE:
-					s.Skip464XLAT = apn.SKIP_464XLAT_DISABLE
-				case carrier_settings.ApnItem_SKIP_464XLAT_ENABLE:
-					s.Skip464XLAT = apn.SKIP_464XLAT_ENABLE
-				default:
-					panic("unhandled skip 464xlat value")
-				}
-
-				return nil
-			}(); err != nil {
+			s, err := carriersettings.ConvertAPN(src)
+			if err != nil {
 				slog.Error("failed to convert apn, skipping", "error", err)
+				continue
+			}
+			if s.EntryName == "" {
+				slog.Error("missing apn name, skipping")
 				continue
 			}
 
@@ -459,8 +322,6 @@ func main() {
 						Comment:       canonicalName,
 						CanonicalName: canonicalName,
 						Setting:       tmp,
-						UserVisible:   src.GetUserVisible(),
-						UserEditable:  src.GetUserEditable(),
 					})
 				}
 			} else {
@@ -474,38 +335,17 @@ func main() {
 				for _, canonicalID := range canonicalIDs {
 					for _, cs := range carrier {
 						for _, c := range cs.CarrierId {
-							if c.MccMnc == nil {
-								slog.Warn("skipping carrier match without mccmnc")
-								continue
+							tmp, err := carriersettings.WithAPNCarrier(s, c)
+							if err != nil {
+								panic(err)
 							}
-							tmp := s
 							if canonicalID != -1 {
 								tmp.CarrierID = canonicalID
 							}
-							tmp.OperatorNumeric = *c.MccMnc
-
-							if c.MvnoData != nil {
-								switch d := c.GetMvnoData().(type) {
-								case *carrier_list.CarrierId_Spn:
-									tmp.MVNOType = apn.MVNO_TYPE_SPN
-									tmp.MVNOMatchData = d.Spn
-								case *carrier_list.CarrierId_Imsi:
-									tmp.MVNOType = apn.MVNO_TYPE_IMSI
-									tmp.MVNOMatchData = d.Imsi
-								case *carrier_list.CarrierId_Gid1:
-									tmp.MVNOType = apn.MVNO_TYPE_GID
-									tmp.MVNOMatchData = d.Gid1
-								default:
-									panic("unhandled mnvo data type")
-								}
-							}
-
 							apns = append(apns, ConvertedAPN{
 								Comment:       canonicalName,
 								CanonicalName: canonicalName,
 								Setting:       tmp,
-								UserVisible:   src.GetUserVisible(),
-								UserEditable:  src.GetUserEditable(),
 							})
 						}
 					}
@@ -536,12 +376,6 @@ func main() {
 		var err error
 		for k, v := range apnsconf.XMLAttrSeq(c.Setting, &err) {
 			w.Attr(nil, k, v)
-		}
-		if !c.UserVisible {
-			w.Attr(nil, "user_visible", "false")
-		}
-		if !c.UserEditable {
-			w.Attr(nil, "user_editable", "false")
 		}
 		if err != nil {
 			panic(err)
